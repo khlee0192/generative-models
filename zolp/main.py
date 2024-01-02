@@ -8,6 +8,7 @@ from pipeline_inversable_stable_diffusion import StableDiffusionInvPipeline
 from diffusers.schedulers import DDIMInverseScheduler, EulerDiscreteScheduler
 
 import os
+import argparse
 import torch
 import random
 import numpy as np
@@ -250,10 +251,9 @@ def main():
             trained_betas = None,        
         )
     else:
-        inv_scheduler = EulerDiscreteInverseScheduler(n_sample_steps=1)
+        inv_scheduler = EulerDiscreteInverseScheduler(n_sample_steps=args.inversion_steps)
 
-    num_inversion_steps = 1
-    pipe.set_invscheduler(inv_scheduler, num_inversion_steps)
+    pipe.set_invscheduler(inv_scheduler, args.inversion_steps)
     
     pipe.to("cuda")
 
@@ -264,7 +264,7 @@ def main():
 
     prompt = "A cinematic shot of a baby racoon wearing an intricate italian priest robe."
     
-    output_original, output_latents = pipe(prompt=prompt, num_inference_steps=1, guidance_scale=0.0, latents=latents)
+    output_original, output_latents = pipe(prompt=prompt, num_inference_steps=args.generation_steps, guidance_scale=0.0, latents=latents)
     image = output_original.images[0]
     
 
@@ -278,6 +278,8 @@ def main():
 
     # latents_scaledT = latents * pipe.scheduler.init_noise_sigma.cpu()
     #print(f"TOT norm : {((latents - (latents_recon/pipe.scheduler.init_noise_sigma).cpu()).norm() / latents.norm()).item()}" )
+    print(f"valitation, latents mean : {latents.mean()}, latents std : {latents.std()}")
+    print(f"valitation, latents mean : {latents_recon.mean()}, latents std : {latents_recon.std()}")
     print(f"TOT norm : {((latents - latents_recon.cpu()).norm() / latents.norm()).item()}" )
 
     latents_image = pipe.vae.decode(latents.cuda() / pipe.vae.config.scaling_factor)[0]
@@ -288,7 +290,7 @@ def main():
     recon_image = pipe.image_processor.postprocess(recon_image.detach(), output_type='pil', do_denormalize=[True])[0]
     #recon_image.show()
 
-    output2_original, output2_latents = pipe(prompt=prompt, num_inference_steps=1, guidance_scale=0.0, latents=latents_recon)
+    output2_original, output2_latents = pipe(prompt=prompt, num_inference_steps=args.generation_steps, guidance_scale=0.0, latents=latents_recon)
     image2 = output2_original.images[0]
     #image2.show()
 
@@ -315,4 +317,14 @@ def main():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='diffusion watermark')
+    parser.add_argument('--generation_steps', default=1, type=int)
+    parser.add_argument('--inversion_steps', default=1, type=int)
+    # parser.add_argument('--dataset', default='Gustavosta/Stable-Diffusion-Prompts')
+    # parser.add_argument('--start', default=0, type=int)
+    # parser.add_argument('--end', default=1000, type=int)
+    # parser.add_argument('--length', default=2, type=int)
+
+    args = parser.parse_args()
+
     main()

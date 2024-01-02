@@ -10,7 +10,8 @@
             "type": "python",
             "request": "launch",
             "program": "${file}",
-            //"args": [],
+            "args": ["--generation_steps", "1",
+                    "--inversion_steps", "1"],
             "console": "integratedTerminal",
             "justMyCode": true
         },

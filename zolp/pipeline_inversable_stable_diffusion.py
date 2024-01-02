@@ -602,7 +602,7 @@ class StableDiffusionInvPipeline(StableDiffusionPipeline):
                     latents = self.inv_scheduler.inv_step(noise_pred, s, 0, latents, return_dict=False)[0]
 
                     # 7-case A- case: correction
-                    if True: #noiser_timestep == 999:
+                    if False: #noiser_timestep == 999:
                         latents = self.forward_step_method(
                             latents, 
                             final_latents, 
@@ -613,13 +613,24 @@ class StableDiffusionInvPipeline(StableDiffusionPipeline):
                             extra_step_kwargs,
                             verbose=verbose,
                             )
-                        
+                    else:
+                        latents = self.gradient_method(
+                            latents, 
+                            final_latents, 
+                            s, t,
+                            prompt_embeds, 
+                            timestep_cond, 
+                            added_cond_kwargs,
+                            extra_step_kwargs,
+                            verbose=verbose,
+                            )
+
                     temp_image = self.vae.decode(latents.cuda() / self.vae.config.scaling_factor)[0]
                     temp_image = self.image_processor.postprocess(temp_image.detach(), output_type='pil', do_denormalize=[True])[0]
 
         return latents
     
-    # The main contribution 2: forward step method
+    # The main contribution 2-1: forward step method
     @torch.inference_mode()
     def forward_step_method(self, latents, final_latents, s, t, prompt_embeds, timestep_cond, added_cond_kwargs,extra_step_kwargs, verbose=False):
         # initialize 
@@ -660,3 +671,48 @@ class StableDiffusionInvPipeline(StableDiffusionPipeline):
         print(f"while forward, alphas used : {alpha_prod_s}, {alpha_prod_t}")
         print(f"while forward, timesteps used : {s}, {t}")
         return latents_s
+    
+    # The main contribution 2-2: gradient method
+    def gradient_method(self, latents, final_latents, s, t, prompt_embeds, timestep_cond, added_cond_kwargs, extra_step_kwargs, verbose=False):
+        # Initialize latent variables
+        latents_s = torch.clone(latents).requires_grad_()  # Clone the initial latents and enable gradient tracking
+        
+        optimizer = torch.optim.SGD([latents_s], lr=0.1)  # Define optimizer with a learning rate
+        criterion = torch.nn.L1Loss()
+        
+        for i in range(100):
+            latent_s_model_input = torch.cat([latents_s] * 2) if self.do_classifier_free_guidance else latents_s
+            latent_s_model_input = self.scheduler.scale_model_input(latent_s_model_input, s)
+            noise_pred = self.unet(
+                latent_s_model_input,
+                s,
+                encoder_hidden_states=prompt_embeds,
+                timestep_cond=timestep_cond,
+                cross_attention_kwargs=self.cross_attention_kwargs,
+                added_cond_kwargs=added_cond_kwargs,
+                return_dict=False,
+            )[0]
+
+            alpha_prod_s = self.scheduler.alphas_cumprod[int(s)]
+            alpha_prod_t = self.scheduler.alphas_cumprod[0]
+            beta_prod_s = 1 - alpha_prod_s
+
+            pred_original_sample = (latents_s - beta_prod_s ** (0.5) * noise_pred) / alpha_prod_s ** (0.5)
+            pred_epsilon = noise_pred
+
+            prev_sample_direction = (1 - alpha_prod_t) ** (0.5) * pred_epsilon
+
+            prev_sample = alpha_prod_t ** (0.5) * pred_original_sample + prev_sample_direction
+            latents_t = prev_sample
+
+            # Calculate your loss based on the difference between latents_t and final_latents
+            loss = criterion(latents_s, final_latents)  # Adjust this based on your actual objective function
+            
+            optimizer.zero_grad()  # Clear accumulated gradients
+            loss.backward()  # Backpropagate to compute gradients
+            optimizer.step()  # Update latents_s based on gradients and the learning rate
+            
+            if verbose:
+                print(i, (loss/final_latents.norm()).item())  # Print loss for tracking
+            
+        return latents_s.detach()  # Return the optimized latent variables without gradients
