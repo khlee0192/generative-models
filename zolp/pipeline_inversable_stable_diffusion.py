@@ -3,6 +3,7 @@ from typing import Any, Callable, Dict, List, Optional, Union
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
+import copy
 
 from diffusers.pipelines.stable_diffusion import StableDiffusionPipeline
 from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion import retrieve_timesteps
@@ -602,7 +603,7 @@ class StableDiffusionInvPipeline(StableDiffusionPipeline):
                     latents = self.inv_scheduler.inv_step(noise_pred, s, 0, latents, return_dict=False)[0]
 
                     # 7-case A- case: correction
-                    if False: #noiser_timestep == 999:
+                    if True: #noiser_timestep == 999:
                         latents = self.forward_step_method(
                             latents, 
                             final_latents, 
@@ -675,15 +676,21 @@ class StableDiffusionInvPipeline(StableDiffusionPipeline):
     # The main contribution 2-2: gradient method
     def gradient_method(self, latents, final_latents, s, t, prompt_embeds, timestep_cond, added_cond_kwargs, extra_step_kwargs, verbose=False):
         # Initialize latent variables
-        latents_s = torch.clone(latents).requires_grad_()  # Clone the initial latents and enable gradient tracking
+        #latents_s = torch.clone(latents).requires_grad_()  # Clone the initial latents and enable gradient tracking
         
+        latents_s = latents.clone()
+        latents_s.requires_grad_(True)
+        final_latents = final_latents.clone()
+
         optimizer = torch.optim.SGD([latents_s], lr=0.1)  # Define optimizer with a learning rate
         criterion = torch.nn.L1Loss()
-        
+
+        model = copy.deepcopy(self.unet)
+
         for i in range(100):
             latent_s_model_input = torch.cat([latents_s] * 2) if self.do_classifier_free_guidance else latents_s
             latent_s_model_input = self.scheduler.scale_model_input(latent_s_model_input, s)
-            noise_pred = self.unet(
+            noise_pred = model(
                 latent_s_model_input,
                 s,
                 encoder_hidden_states=prompt_embeds,
@@ -706,7 +713,7 @@ class StableDiffusionInvPipeline(StableDiffusionPipeline):
             latents_t = prev_sample
 
             # Calculate your loss based on the difference between latents_t and final_latents
-            loss = criterion(latents_s, final_latents)  # Adjust this based on your actual objective function
+            loss = criterion(latents_t, final_latents)  # Adjust this based on your actual objective function
             
             optimizer.zero_grad()  # Clear accumulated gradients
             loss.backward()  # Backpropagate to compute gradients
