@@ -441,190 +441,191 @@ class StableDiffusionInvPipeline(StableDiffusionPipeline):
         # the inputs are the same as StableDiffusionPipeline.__call__()
 
         # in our code, we use only prompt, num_inference_steps=1, guidance_scale=0.0.
+        with torch.no_grad():
+            assert guidance_scale==0.0
+            assert self.do_classifier_free_guidance == False
 
-        assert guidance_scale==0.0
-        assert self.do_classifier_free_guidance == False
+            # 2. Define call parameters
+            if prompt is not None and isinstance(prompt, str):
+                batch_size = 1
+            elif prompt is not None and isinstance(prompt, list):
+                batch_size = len(prompt)
+            else:
+                batch_size = prompt_embeds.shape[0]
 
-        # 2. Define call parameters
-        if prompt is not None and isinstance(prompt, str):
-            batch_size = 1
-        elif prompt is not None and isinstance(prompt, list):
-            batch_size = len(prompt)
-        else:
-            batch_size = prompt_embeds.shape[0]
+            device = self._execution_device
 
-        device = self._execution_device
+            # 3. Encode input prompt
+            lora_scale = (
+                self.cross_attention_kwargs.get("scale", None) if self.cross_attention_kwargs is not None else None
+            )
+            prompt_embeds, negative_prompt_embeds = self.encode_prompt(
+                prompt,
+                device,
+                num_images_per_prompt,
+                self.do_classifier_free_guidance,
+                negative_prompt,
+                prompt_embeds=prompt_embeds,
+                negative_prompt_embeds=negative_prompt_embeds,
+                lora_scale=lora_scale,
+                clip_skip=self.clip_skip,
+            )        
 
-        # 3. Encode input prompt
-        lora_scale = (
-            self.cross_attention_kwargs.get("scale", None) if self.cross_attention_kwargs is not None else None
-        )
-        prompt_embeds, negative_prompt_embeds = self.encode_prompt(
-            prompt,
-            device,
-            num_images_per_prompt,
-            self.do_classifier_free_guidance,
-            negative_prompt,
-            prompt_embeds=prompt_embeds,
-            negative_prompt_embeds=negative_prompt_embeds,
-            lora_scale=lora_scale,
-            clip_skip=self.clip_skip,
-        )        
-
-        # For classifier free guidance, we need to do two forward passes.
-        # Here we concatenate the unconditional and text embeddings into a single batch
-        # to avoid doing two forward passes
-        if self.do_classifier_free_guidance:
-            prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds])
-
-        if ip_adapter_image is not None:
-            image_embeds, negative_image_embeds = self.encode_image(ip_adapter_image, device, num_images_per_prompt)
+            # For classifier free guidance, we need to do two forward passes.
+            # Here we concatenate the unconditional and text embeddings into a single batch
+            # to avoid doing two forward passes
             if self.do_classifier_free_guidance:
-                image_embeds = torch.cat([negative_image_embeds, image_embeds])
+                prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds])
 
-        # 4. Prepare timesteps
-        #timesteps, num_inversion_steps = retrieve_timesteps(self.scheduler, num_inversion_steps, device, timesteps)
+            if ip_adapter_image is not None:
+                image_embeds, negative_image_embeds = self.encode_image(ip_adapter_image, device, num_images_per_prompt)
+                if self.do_classifier_free_guidance:
+                    image_embeds = torch.cat([negative_image_embeds, image_embeds])
 
-        # 5. Prepare latent variables: please don't do this
+            # 4. Prepare timesteps
+            #timesteps, num_inversion_steps = retrieve_timesteps(self.scheduler, num_inversion_steps, device, timesteps)
 
-        # 6. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
-        extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
+            # 5. Prepare latent variables: please don't do this
 
-        # 6.1 Add image embeds for IP-Adapter
-        added_cond_kwargs = {"image_embeds": image_embeds} if ip_adapter_image is not None else None
+            # 6. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
+            extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
 
-        # 6.2 Optionally get Guidance Scale Embedding
-        timestep_cond = None
-        if self.unet.config.time_cond_proj_dim is not None:
-            guidance_scale_tensor = torch.tensor(self.guidance_scale - 1).repeat(batch_size * num_images_per_prompt)
-            timestep_cond = self.get_guidance_scale_embedding(
-                guidance_scale_tensor, embedding_dim=self.unet.config.time_cond_proj_dim
-            ).to(device=device, dtype=latents.dtype)
+            # 6.1 Add image embeds for IP-Adapter
+            added_cond_kwargs = {"image_embeds": image_embeds} if ip_adapter_image is not None else None
 
-        # 7. inv-Denoising loop
-        final_latents = latents
-        # 7-case A. Naive DDIM inversion 
-        if self.inv_scheduler_type=='DDIMInverseScheduler':
-            inv_timesteps = self.inv_scheduler.timesteps-1 # [1, 101, 201, ... , 901]
-            # inv_timesteps_noiser = inv_timesteps + 
-            with self.progress_bar(total=num_inversion_steps) as progress_bar:
-                for i, timestep in enumerate(inv_timesteps):
-                    noiser_timestep = 999 if i==inv_timesteps.__len__()-1 else inv_timesteps[i+1]
-                    t = timestep
-                    s = noiser_timestep
-                    print(f"{t}, {s}")
-                    # expand the latents if we are doing classifier free guidance
-                    latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents
-                    latent_model_input = self.scheduler.scale_model_input(latent_model_input, s)
-                    # predict the noise residual
-                    noise_pred = self.unet(
-                        latent_model_input,
-                        s,
-                        encoder_hidden_states=prompt_embeds,
-                        timestep_cond=timestep_cond,
-                        cross_attention_kwargs=self.cross_attention_kwargs,
-                        added_cond_kwargs=added_cond_kwargs,
-                        return_dict=False,
-                    )[0]
+            # 6.2 Optionally get Guidance Scale Embedding
+            timestep_cond = None
+            if self.unet.config.time_cond_proj_dim is not None:
+                guidance_scale_tensor = torch.tensor(self.guidance_scale - 1).repeat(batch_size * num_images_per_prompt)
+                timestep_cond = self.get_guidance_scale_embedding(
+                    guidance_scale_tensor, embedding_dim=self.unet.config.time_cond_proj_dim
+                ).to(device=device, dtype=latents.dtype)
 
-                    # perform guidance
-                    if self.do_classifier_free_guidance:
-                        noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                        noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond)
+            # 7. inv-Denoising loop
+            final_latents = latents
+            # 7-case A. Naive DDIM inversion 
+            if self.inv_scheduler_type=='DDIMInverseScheduler':
+                inv_timesteps = self.inv_scheduler.timesteps-1 # [1, 101, 201, ... , 901]
+                # inv_timesteps_noiser = inv_timesteps + 
+                with self.progress_bar(total=num_inversion_steps) as progress_bar:
+                    for i, timestep in enumerate(inv_timesteps):
+                        noiser_timestep = 999 if i==inv_timesteps.__len__()-1 else inv_timesteps[i+1]
+                        t = timestep
+                        s = noiser_timestep
+                        print(f"{t}, {s}")
+                        # expand the latents if we are doing classifier free guidance
+                        latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents
+                        latent_model_input = self.scheduler.scale_model_input(latent_model_input, s)
+                        # predict the noise residual
+                        noise_pred = self.unet(
+                            latent_model_input,
+                            s,
+                            encoder_hidden_states=prompt_embeds,
+                            timestep_cond=timestep_cond,
+                            cross_attention_kwargs=self.cross_attention_kwargs,
+                            added_cond_kwargs=added_cond_kwargs,
+                            return_dict=False,
+                        )[0]
 
-                    if self.do_classifier_free_guidance and self.guidance_rescale > 0.0:
-                        # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
-                        noise_pred = rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=self.guidance_rescale)
+                        # perform guidance
+                        if self.do_classifier_free_guidance:
+                            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                            noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond)
 
-                    latents = self.inv_scheduler.step(noise_pred, s, latents, return_dict=False)[0]
+                        if self.do_classifier_free_guidance and self.guidance_rescale > 0.0:
+                            # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
+                            noise_pred = rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=self.guidance_rescale)
 
-                    # 7-case A- case: correction
-                    if True: #noiser_timestep == 999:
-                        latents = self.forward_step_method(
-                            latents, 
-                            final_latents, 
-                            s, 0,
-                            prompt_embeds, 
-                            timestep_cond, 
-                            added_cond_kwargs,
-                            extra_step_kwargs,
-                            verbose=verbose,
-                            )
+                        latents = self.inv_scheduler.step(noise_pred, s, latents, return_dict=False)[0]
 
-                    #print(f"iteration {i}, mean of latents {latents.mean()}, std of latents {latents.std()}")
+                        # 7-case A- case: correction
+                        if True: #noiser_timestep == 999:
+                            latents = self.forward_step_method(
+                                latents, 
+                                final_latents, 
+                                s, 0,
+                                prompt_embeds, 
+                                timestep_cond, 
+                                added_cond_kwargs,
+                                extra_step_kwargs,
+                                verbose=verbose,
+                                )
 
-        elif(self.inv_scheduler_type=='EulerDiscreteInverseScheduler'):
-            inv_timesteps = self.inv_scheduler.timesteps-1 # [1, 101, 201, ... , 901]
-            # inv_timesteps_noiser = inv_timesteps + 
-            with self.progress_bar(total=num_inversion_steps) as progress_bar:
-                for i, timestep in enumerate(inv_timesteps):
-                    
-                    if(i==0):
-                        t = 0
-                        s  = inv_timesteps[0]
-                    else:
-                        t = inv_timesteps[i-1]
-                        s = inv_timesteps[i]
+                        #print(f"iteration {i}, mean of latents {latents.mean()}, std of latents {latents.std()}")
 
-                    # #if(i==9) : break
-                    # noiser_timestep = 999 if i==inv_timesteps.__len__()-1 else inv_timesteps[i+1]
-                    # t = timestep
-                    # s = noiser_timestep
-                    print(f"{t}, {s}")
-                    
-                    # expand the latents if we are doing classifier free guidance
-                    latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents
-                    latent_model_input = self.scheduler.scale_model_input(latent_model_input, s)
-                    # predict the noise residual
-                    noise_pred = self.unet(
-                        latent_model_input,
-                        s,
-                        encoder_hidden_states=prompt_embeds,
-                        timestep_cond=timestep_cond,
-                        cross_attention_kwargs=self.cross_attention_kwargs,
-                        added_cond_kwargs=added_cond_kwargs,
-                        return_dict=False,
-                    )[0]
+            elif(self.inv_scheduler_type=='EulerDiscreteInverseScheduler'):
+                inv_timesteps = self.inv_scheduler.timesteps-1 # [1, 101, 201, ... , 901]
+                # inv_timesteps_noiser = inv_timesteps + 
+                with self.progress_bar(total=num_inversion_steps) as progress_bar:
+                    for i, timestep in enumerate(inv_timesteps):
+                        
+                        if(i==0):
+                            t = 0
+                            s  = inv_timesteps[0]
+                        else:
+                            t = inv_timesteps[i-1]
+                            s = inv_timesteps[i]
 
-                    # perform guidance
-                    if self.do_classifier_free_guidance:
-                        noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                        noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond)
+                        # #if(i==9) : break
+                        # noiser_timestep = 999 if i==inv_timesteps.__len__()-1 else inv_timesteps[i+1]
+                        # t = timestep
+                        # s = noiser_timestep
+                        print(f"{t}, {s}")
+                        
+                        # expand the latents if we are doing classifier free guidance
+                        latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents
+                        latent_model_input = self.scheduler.scale_model_input(latent_model_input, s)
+                        # predict the noise residual
+                        noise_pred = self.unet(
+                            latent_model_input,
+                            s,
+                            encoder_hidden_states=prompt_embeds,
+                            timestep_cond=timestep_cond,
+                            cross_attention_kwargs=self.cross_attention_kwargs,
+                            added_cond_kwargs=added_cond_kwargs,
+                            return_dict=False,
+                        )[0]
 
-                    if self.do_classifier_free_guidance and self.guidance_rescale > 0.0:
-                        # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
-                        noise_pred = rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=self.guidance_rescale)
+                        # perform guidance
+                        if self.do_classifier_free_guidance:
+                            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                            noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond)
 
-                    latents = self.inv_scheduler.scale_model_input_inv(latents, s)
-                    latents = self.inv_scheduler.inv_step(noise_pred, s, 0, latents, return_dict=False)[0]
+                        if self.do_classifier_free_guidance and self.guidance_rescale > 0.0:
+                            # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
+                            noise_pred = rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=self.guidance_rescale)
 
-                    # 7-case A- case: correction
-                    latents.detach()
-                    if False: #noiser_timestep == 999:
-                        latents = self.forward_step_method(
-                            latents, 
-                            final_latents, 
-                            s, t,
-                            prompt_embeds, 
-                            timestep_cond, 
-                            added_cond_kwargs,
-                            extra_step_kwargs,
-                            verbose=verbose,
-                            )
-                    else:
-                        latents = self.gradient_method(
-                            latents, 
-                            final_latents, 
-                            s, t,
-                            prompt_embeds, 
-                            timestep_cond, 
-                            added_cond_kwargs,
-                            extra_step_kwargs,
-                            verbose=verbose,
-                            )
+                        latents = self.inv_scheduler.scale_model_input_inv(latents, s)
+                        latents = self.inv_scheduler.inv_step(noise_pred, s, 0, latents, return_dict=False)[0]
 
-                    temp_image = self.vae.decode(latents.cuda() / self.vae.config.scaling_factor)[0]
-                    temp_image = self.image_processor.postprocess(temp_image.detach(), output_type='pil', do_denormalize=[True])[0]
+                        # 7-case A- case: correction
+                        if False: #noiser_timestep == 999:
+                            latents = self.forward_step_method(
+                                latents, 
+                                final_latents, 
+                                s, t,
+                                prompt_embeds, 
+                                timestep_cond, 
+                                added_cond_kwargs,
+                                extra_step_kwargs,
+                                verbose=verbose,
+                                )
+                        else:
+                            torch.set_grad_enabled(True)
+                            latents = self.gradient_method(
+                                latents, 
+                                final_latents, 
+                                s, t,
+                                prompt_embeds, 
+                                timestep_cond, 
+                                added_cond_kwargs,
+                                extra_step_kwargs,
+                                verbose=verbose,
+                                )
+                            torch.set_grad_enabled(False)
+
+                        temp_image = self.vae.decode(latents.cuda() / self.vae.config.scaling_factor)[0]
+                        temp_image = self.image_processor.postprocess(temp_image.detach(), output_type='pil', do_denormalize=[True])[0]
 
         return latents
     
@@ -680,7 +681,7 @@ class StableDiffusionInvPipeline(StableDiffusionPipeline):
         final_latents = final_latents.clone()
 
         optimizer = torch.optim.SGD([latents_s], lr=0.1)  # Define optimizer with a learning rate
-        criterion = torch.nn.L1Loss()
+        loss_function = torch.nn.MSELoss(reduction='sum')
 
         model = copy.deepcopy(self.unet)
 
@@ -710,7 +711,7 @@ class StableDiffusionInvPipeline(StableDiffusionPipeline):
             latents_t = prev_sample
 
             # Calculate your loss based on the difference between latents_t and final_latents
-            loss = criterion(latents_t, final_latents)  # Adjust this based on your actual objective function
+            loss = loss_function(latents_t, final_latents)  # Adjust this based on your actual objective function
             
             optimizer.zero_grad()  # Clear accumulated gradients
             loss.backward()  # Backpropagate to compute gradients
