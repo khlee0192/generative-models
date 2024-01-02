@@ -94,7 +94,8 @@ class EulerDiscreteInverseScheduler(EulerDiscreteScheduler):
     ):
         
         self.n_sample_steps = n_sample_steps
-        self.steps_subset = [0, 100, 200, 300, 1000]
+        self.steps_subset = [0, 250, 500, 750, 1000]
+        #self.steps_subset = [0, 100, 200, 300, 1000]
         self.prediction_type = prediction_type
         if trained_betas is not None:
             self.betas = torch.tensor(trained_betas, dtype=torch.float32)
@@ -162,8 +163,8 @@ class EulerDiscreteInverseScheduler(EulerDiscreteScheduler):
         return_dict: bool = True,
     ):
         if (
-            isinstance(timestep, int)
-            or isinstance(timestep, torch.IntTensor)
+            #isinstance(timestep, int)
+            isinstance(timestep, torch.IntTensor)
             or isinstance(timestep, torch.LongTensor)
         ):
             raise ValueError(
@@ -226,7 +227,7 @@ class EulerDiscreteInverseScheduler(EulerDiscreteScheduler):
         # This way we can ensure we don't accidentally skip a sigma in
         # case we start in the middle of the denoising schedule (e.g. for image-to-image)
         if len(index_candidates) > 1:
-            step_index = index_candidates[1]
+            step_index = index_candidates[1] 
         else:
             step_index = index_candidates[0]
 
@@ -236,7 +237,9 @@ def main():
 
     pipe = AutoPipelineForText2ImageInv.from_pretrained("stabilityai/sd-turbo", torch_dtype=torch.float16, variant="fp16")
     
-    if False:
+    use_ddim_scheduler = False
+
+    if use_ddim_scheduler:
         inv_scheduler = DDIMInverseScheduler(
             beta_end = 0.012,
             beta_schedule = 'scaled_linear', #squaredcos_cap_v2
@@ -247,9 +250,9 @@ def main():
             trained_betas = None,        
         )
     else:
-        inv_scheduler = EulerDiscreteInverseScheduler(n_sample_steps=4)
+        inv_scheduler = EulerDiscreteInverseScheduler(n_sample_steps=1)
 
-    num_inversion_steps = 10
+    num_inversion_steps = 1
     pipe.set_invscheduler(inv_scheduler, num_inversion_steps)
     
     pipe.to("cuda")
@@ -272,8 +275,10 @@ def main():
         latents=output_latents,
         verbose=True,
     )
+
     # latents_scaledT = latents * pipe.scheduler.init_noise_sigma.cpu()
-    print(f"TOT norm : {((latents - (latents_recon/pipe.scheduler.init_noise_sigma).cpu()).norm() / latents.norm()).item()}" )
+    #print(f"TOT norm : {((latents - (latents_recon/pipe.scheduler.init_noise_sigma).cpu()).norm() / latents.norm()).item()}" )
+    print(f"TOT norm : {((latents - latents_recon.cpu()).norm() / latents.norm()).item()}" )
 
     latents_image = pipe.vae.decode(latents.cuda() / pipe.vae.config.scaling_factor)[0]
     latents_image = pipe.image_processor.postprocess(latents_image.detach(), output_type='pil', do_denormalize=[True])[0]
@@ -305,8 +310,8 @@ def main():
     
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     save_directory = "/home/icl2/khlee/generative-models/zolp/images/"
-    plt.show()
-    #plt.savefig(os.path.join(save_directory, f"plot_{timestamp}.png"))
+    #plt.show()
+    plt.savefig(os.path.join(save_directory, f"plot_{timestamp}.png"))
 
 
 if __name__ == "__main__":

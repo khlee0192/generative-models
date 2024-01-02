@@ -2,6 +2,7 @@ from typing import Any, Callable, Dict, List, Optional, Union
 
 import torch
 import numpy as np
+import matplotlib.pyplot as plt
 
 from diffusers.pipelines.stable_diffusion import StableDiffusionPipeline
 from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion import retrieve_timesteps
@@ -340,6 +341,8 @@ class StableDiffusionInvPipeline(StableDiffusionPipeline):
                 latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents
                 latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
+                print(f"generation : {t}, {timestep_cond}")
+
                 # predict the noise residual
                 noise_pred = self.unet(
                     latent_model_input,
@@ -505,10 +508,10 @@ class StableDiffusionInvPipeline(StableDiffusionPipeline):
             # inv_timesteps_noiser = inv_timesteps + 
             with self.progress_bar(total=num_inversion_steps) as progress_bar:
                 for i, timestep in enumerate(inv_timesteps):
-                    #if(i==9) : break
                     noiser_timestep = 999 if i==inv_timesteps.__len__()-1 else inv_timesteps[i+1]
                     t = timestep
                     s = noiser_timestep
+                    print(f"{t}, {s}")
                     # expand the latents if we are doing classifier free guidance
                     latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents
                     latent_model_input = self.scheduler.scale_model_input(latent_model_input, s)
@@ -546,15 +549,32 @@ class StableDiffusionInvPipeline(StableDiffusionPipeline):
                             extra_step_kwargs,
                             verbose=verbose,
                             )
+
+                    #print(f"iteration {i}, mean of latents {latents.mean()}, std of latents {latents.std()}")
+
         elif(self.inv_scheduler_type=='EulerDiscreteInverseScheduler'):
             inv_timesteps = self.inv_scheduler.timesteps-1 # [1, 101, 201, ... , 901]
             # inv_timesteps_noiser = inv_timesteps + 
             with self.progress_bar(total=num_inversion_steps) as progress_bar:
                 for i, timestep in enumerate(inv_timesteps):
-                    #if(i==9) : break
-                    noiser_timestep = 999 if i==inv_timesteps.__len__()-1 else inv_timesteps[i+1]
-                    t = timestep
-                    s = noiser_timestep
+                    
+                    if(i==0):
+                        t = 0
+                        s  = inv_timesteps[0]
+                    else:
+                        t = inv_timesteps[i-1]
+                        s = inv_timesteps[i]
+
+                    # #if(i==9) : break
+                    # noiser_timestep = 999 if i==inv_timesteps.__len__()-1 else inv_timesteps[i+1]
+                    # t = timestep
+                    # s = noiser_timestep
+                    
+                    
+                    print(f"{t}, {s}")
+                    
+                    
+                    
                     # expand the latents if we are doing classifier free guidance
                     latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents
                     latent_model_input = self.scheduler.scale_model_input(latent_model_input, s)
@@ -586,13 +606,16 @@ class StableDiffusionInvPipeline(StableDiffusionPipeline):
                         latents = self.forward_step_method(
                             latents, 
                             final_latents, 
-                            s, 0,
+                            s, t,
                             prompt_embeds, 
                             timestep_cond, 
                             added_cond_kwargs,
                             extra_step_kwargs,
                             verbose=verbose,
                             )
+                        
+                    temp_image = self.vae.decode(latents.cuda() / self.vae.config.scaling_factor)[0]
+                    temp_image = self.image_processor.postprocess(temp_image.detach(), output_type='pil', do_denormalize=[True])[0]
 
         return latents
     
@@ -615,7 +638,7 @@ class StableDiffusionInvPipeline(StableDiffusionPipeline):
                 return_dict=False,
             )[0]
 
-            alpha_prod_s = self.scheduler.alphas_cumprod[s]
+            alpha_prod_s = self.scheduler.alphas_cumprod[int(s)]
             alpha_prod_t = self.scheduler.alphas_cumprod[0]
             beta_prod_s = 1 - alpha_prod_s
 
@@ -627,7 +650,13 @@ class StableDiffusionInvPipeline(StableDiffusionPipeline):
             prev_sample = alpha_prod_t ** (0.5) * pred_original_sample + prev_sample_diretion
             latents_t = prev_sample
         
-            latents_s = latents_s - 0.1 * (latents_t - final_latents)
+            if t == 999 and i > 20:
+                latents_s = latents_s - 0.01 * (latents_t - final_latents)    
+            else:
+                latents_s = latents_s - 0.1 * (latents_t - final_latents)
             if verbose:
                 print(i, (latents_t - final_latents).norm()/final_latents.norm() )
+        
+        print(f"while forward, alphas used : {alpha_prod_s}, {alpha_prod_t}")
+        print(f"while forward, timesteps used : {s}, {t}")
         return latents_s
