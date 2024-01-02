@@ -411,7 +411,7 @@ class StableDiffusionInvPipeline(StableDiffusionPipeline):
         return output_original, latents
     
     # The main contribution 1: exact inversion
-    @torch.inference_mode()
+    #@torch.inference_mode()
     def exact_inversion(
         self,
         prompt: Union[str, List[str]] = None,
@@ -570,11 +570,7 @@ class StableDiffusionInvPipeline(StableDiffusionPipeline):
                     # noiser_timestep = 999 if i==inv_timesteps.__len__()-1 else inv_timesteps[i+1]
                     # t = timestep
                     # s = noiser_timestep
-                    
-                    
                     print(f"{t}, {s}")
-                    
-                    
                     
                     # expand the latents if we are doing classifier free guidance
                     latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents
@@ -603,7 +599,8 @@ class StableDiffusionInvPipeline(StableDiffusionPipeline):
                     latents = self.inv_scheduler.inv_step(noise_pred, s, 0, latents, return_dict=False)[0]
 
                     # 7-case A- case: correction
-                    if True: #noiser_timestep == 999:
+                    latents.detach()
+                    if False: #noiser_timestep == 999:
                         latents = self.forward_step_method(
                             latents, 
                             final_latents, 
